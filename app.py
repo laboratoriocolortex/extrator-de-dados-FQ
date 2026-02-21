@@ -2,49 +2,40 @@ import streamlit as st
 import google.generativeai as genai
 from PIL import Image
 
-# Configuração da página
-st.set_page_config(page_title="Extrator Gemini 3 Flash", layout="wide")
+st.set_page_config(page_title="Extrator Logístico", layout="wide")
 
-st.title("🚀 Extrator de Produção - Gemini 3 Flash")
+st.title("🎨 Extrator de Diários de Produção")
 
 with st.sidebar:
-    st.header("Configuração")
-    api_key = st.text_input("Insira sua Gemini API Key:", type="password")
-    st.info("Modelo configurado: Gemini 2.0/3 Flash Preview")
-
-# Prompt de Negócio (O mesmo que definimos antes)
-SYSTEM_PROMPT = """
-Você é um especialista em OCR e produção de tintas. 
-Extraia: Família, Produto, Lote, Tipo de Cor (BRANCO, COLORIDO ou NÃO SE APLICA), 
-Horário (sempre no formato HH:MM - HH:MM), pH e Densidade.
-Ignore textos como 'análise FQ' ou 'pigmentação'.
-Forneça uma tabela Markdown e um bloco CSV separado por ponto e vírgula (;).
-"""
+    api_key = st.text_input("Cole sua Gemini API Key:", type="password")
 
 if api_key:
     try:
         genai.configure(api_key=api_key)
         
-        # O identificador 'gemini-2.0-flash-exp' é o que o Google usa atualmente 
-        # para os modelos que aparecem como "Gemini 3 / Next Gen" no AI Studio.
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        # Tentando o caminho absoluto do modelo estável
+        model_name = 'models/gemini-1.5-flash'
+        model = genai.GenerativeModel(model_name)
 
-        uploaded_file = st.file_uploader("Carregue a foto do diário ou etiqueta", type=["jpg", "jpeg", "png"])
-
-        if uploaded_file:
-            image = Image.open(uploaded_file)
-            st.image(image, caption="Imagem para análise", width=400)
-            
-            if st.button("Executar Extração Inteligente"):
-                with st.spinner("O Gemini 3 está analisando os dados..."):
-                    # Chamada do modelo com a imagem e o prompt
-                    response = model.generate_content([SYSTEM_PROMPT, image])
-                    st.markdown("### Resultado:")
-                    st.markdown(response.text)
-                    
+        uploaded_file = st.file_uploader("Suba a imagem do diário", type=["jpg", "jpeg", "png"])
+        
+        if uploaded_file and st.button("🚀 Processar Dados"):
+            img = Image.open(uploaded_file)
+            with st.spinner("Analisando..."):
+                # O prompt de extração
+                prompt = "Extraia os dados de produção da imagem em formato de tabela CSV (delimitador ;)."
+                response = model.generate_content([prompt, img])
+                st.markdown(response.text)
+                
     except Exception as e:
-        st.error(f"Erro de conexão: {e}")
-        st.info("Dica: Se o erro for 404, o modelo 'gemini-2.0-flash-exp' pode ter mudado de nome. Tente 'gemini-1.5-flash-latest'.")
+        st.error(f"Erro detectado: {e}")
+        
+        # Bloco de ajuda para depuração
+        st.info("Tentando listar modelos disponíveis para sua chave...")
+        try:
+            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            st.write("Sua chave tem acesso aos seguintes modelos:", available_models)
+        except:
+            st.error("Não foi possível sequer listar os modelos. Verifique se sua API Key é válida.")
 else:
-    st.warning("Aguardando API Key na barra lateral...")
-
+    st.warning("Insira a API Key na barra lateral.")
