@@ -27,7 +27,7 @@ if api_key:
         
         # O identificador 'gemini-2.0-flash-exp' é o que o Google usa atualmente 
         # para os modelos que aparecem como "Gemini 3 / Next Gen" no AI Studio.
-        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
         uploaded_file = st.file_uploader("Carregue a foto do diário ou etiqueta", type=["jpg", "jpeg", "png"])
 
@@ -47,3 +47,4 @@ if api_key:
         st.info("Dica: Se o erro for 404, o modelo 'gemini-2.0-flash-exp' pode ter mudado de nome. Tente 'gemini-1.5-flash-latest'.")
 else:
     st.warning("Aguardando API Key na barra lateral...")
+
