@@ -1,42 +1,49 @@
 import streamlit as st
 import google.generativeai as genai
 from PIL import Image
+import time
 
-st.set_page_config(page_title="Extrator Logístico", layout="wide")
+st.set_page_config(page_title="Extrator Pro", layout="wide")
 
-st.title("🎨 Extrator de Diários de Produção")
+# Função para conectar ao modelo apenas uma vez (Economiza Quota)
+@st.cache_resource
+def configurar_modelo(api_key, model_name):
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel(model_name)
+
+st.title("🎨 Extrator de Produção (Gemini 2.0/3)")
 
 with st.sidebar:
-    api_key = st.text_input("Cole sua Gemini API Key:", type="password")
+    api_key = st.text_input("Sua API Key:", type="password")
+    # Mantendo o modelo que você preferiu
+    modelo_selecionado = 'models/gemini-2.0-flash-exp' 
 
 if api_key:
     try:
-        genai.configure(api_key=api_key)
+        model = configurar_modelo(api_key, modelo_selecionado)
         
-        # Tentando o caminho absoluto do modelo estável
-        model_name = 'models/gemini-1.5-flash'
-        model = genai.GenerativeModel('models/gemini-2.0-flash-exp-image-generation')
-
-        uploaded_file = st.file_uploader("Suba a imagem do diário", type=["jpg", "jpeg", "png"])
+        uploaded_file = st.file_uploader("Foto do Diário", type=["jpg", "png", "jpeg"])
         
-        if uploaded_file and st.button("🚀 Processar Dados"):
+        if uploaded_file:
             img = Image.open(uploaded_file)
-            with st.spinner("Analisando..."):
-                # O prompt de extração
-                prompt = "Extraia os dados de produção da imagem em formato de tabela CSV (delimitador ;)."
-                response = model.generate_content([prompt, img])
-                st.markdown(response.text)
-                
+            st.image(img, width=300)
+            
+            if st.button("🚀 Processar Agora"):
+                with st.spinner("Analisando... Por favor, aguarde."):
+                    # O seu prompt mestre
+                    prompt = "Extraia os dados de produção desta imagem. Retorne em formato de tabela e depois em bloco de código CSV (ponto e vírgula)."
+                    
+                    try:
+                        response = model.generate_content([prompt, img])
+                        st.success("Concluído!")
+                        st.markdown(response.text)
+                    except Exception as e:
+                        if "429" in str(e):
+                            st.error("Limite de velocidade atingido! Aguarde 60 segundos antes de tentar a próxima foto.")
+                        else:
+                            st.error(f"Erro: {e}")
+                            
     except Exception as e:
-        st.error(f"Erro detectado: {e}")
-        
-        # Bloco de ajuda para depuração
-        st.info("Tentando listar modelos disponíveis para sua chave...")
-        try:
-            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            st.write("Sua chave tem acesso aos seguintes modelos:", available_models)
-        except:
-            st.error("Não foi possível sequer listar os modelos. Verifique se sua API Key é válida.")
+        st.error(f"Erro na configuração: {e}")
 else:
-    st.warning("Insira a API Key na barra lateral.")
-
+    st.info("Aguardando API Key...")
