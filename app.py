@@ -20,7 +20,7 @@ with st.sidebar:
 
 if api_key:
     try:
-        model = configurar_modelo(api_key, modelo_selecionado)
+        model = genai.GenerativeModel('models/gemini-2.0-flash-exp')
         
         uploaded_file = st.file_uploader("Foto do Diário", type=["jpg", "png", "jpeg"])
         
@@ -47,3 +47,4 @@ if api_key:
         st.error(f"Erro na configuração: {e}")
 else:
     st.info("Aguardando API Key...")
+
