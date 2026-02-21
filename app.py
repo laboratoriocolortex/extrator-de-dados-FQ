@@ -15,7 +15,7 @@ if api_key:
         
         # Tentando o caminho absoluto do modelo estável
         model_name = 'models/gemini-1.5-flash'
-        model = genai.GenerativeModel(model_name)
+        model = genai.GenerativeModel('models/gemini-2.0-flash-exp-image-generation')
 
         uploaded_file = st.file_uploader("Suba a imagem do diário", type=["jpg", "jpeg", "png"])
         
@@ -39,3 +39,4 @@ if api_key:
             st.error("Não foi possível sequer listar os modelos. Verifique se sua API Key é válida.")
 else:
     st.warning("Insira a API Key na barra lateral.")
+
