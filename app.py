@@ -13,7 +13,7 @@ except:
     st.stop()
 
 # Tentando o nome mais simples possível
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('models/gemini-3-flash-preview')
 
 st.title("🚀 Extrator de Produção")
 
@@ -31,3 +31,4 @@ if uploaded_file and st.button("Processar"):
         st.write("Modelos disponíveis na sua região:")
         models = [m.name for m in genai.list_models()]
         st.write(models)
+
