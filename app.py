@@ -21,7 +21,7 @@ if api_key:
         
         # DEFINIÇÃO DO MODELO (O nome técnico para o Gemini 3 Preview)
         # Esta é a linha que você estava procurando!
-        model = genai.GenerativeModel(model_name='models/gemini-2.0-flash-exp')
+        model = genai.GenerativeModel(model_name='models/gemini-1.5-flash')
 
         # Upload da Imagem
         uploaded_file = st.file_uploader("Selecione a foto do diário de produção", type=["jpg", "jpeg", "png"])
@@ -62,3 +62,4 @@ else:
 
 st.markdown("---")
 st.caption("Desenvolvido para automação de processos logísticos.")
+
