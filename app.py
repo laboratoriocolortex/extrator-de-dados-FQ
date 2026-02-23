@@ -11,7 +11,7 @@ st.markdown("---")
 with st.sidebar:
     st.header("Configurações")
     api_key = st.text_input("Cole sua Gemini API Key:", type="password")
-    st.info("Modelo: Gemini 2.0 Flash (Preview)")
+    st.info("Modelo: Gemini 1.5 Flash")
 
 # 3. Lógica Principal
 if api_key:
@@ -62,4 +62,5 @@ else:
 
 st.markdown("---")
 st.caption("Desenvolvido para automação de processos logísticos.")
+
 
