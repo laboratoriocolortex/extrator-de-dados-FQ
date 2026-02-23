@@ -1,50 +1,64 @@
 import streamlit as st
 import google.generativeai as genai
 from PIL import Image
-import time
 
-st.set_page_config(page_title="Extrator Pro", layout="wide")
+# 1. Configuração Visual
+st.set_page_config(page_title="Extrator Gemini 3 Flash", layout="centered")
+st.title("🚀 Extrator Pro - Gemini 3 Flash Preview")
+st.markdown("---")
 
-# Função para conectar ao modelo apenas uma vez (Economiza Quota)
-@st.cache_resource
-def configurar_modelo(api_key, model_name):
-    genai.configure(api_key=api_key)
-    return genai.GenerativeModel(model_name)
-
-st.title("🎨 Extrator de Produção (Gemini 2.0/3)")
-
+# 2. Barra Lateral para API Key
 with st.sidebar:
-    api_key = st.text_input("Sua API Key:", type="password")
-    # Mantendo o modelo que você preferiu
-    modelo_selecionado = 'models/gemini-2.0-flash-exp' 
+    st.header("Configurações")
+    api_key = st.text_input("Cole sua Gemini API Key:", type="password")
+    st.info("Modelo: Gemini 2.0 Flash (Preview)")
 
+# 3. Lógica Principal
 if api_key:
     try:
-        model = genai.GenerativeModel('models/gemini-2.0-flash-exp')
+        # Configura a API
+        genai.configure(api_key=api_key)
         
-        uploaded_file = st.file_uploader("Foto do Diário", type=["jpg", "png", "jpeg"])
-        
+        # DEFINIÇÃO DO MODELO (O nome técnico para o Gemini 3 Preview)
+        # Esta é a linha que você estava procurando!
+        model = genai.GenerativeModel(model_name='models/gemini-2.0-flash-exp')
+
+        # Upload da Imagem
+        uploaded_file = st.file_uploader("Selecione a foto do diário de produção", type=["jpg", "jpeg", "png"])
+
         if uploaded_file:
             img = Image.open(uploaded_file)
-            st.image(img, width=300)
+            st.image(img, caption="Imagem carregada", use_container_width=True)
             
-            if st.button("🚀 Processar Agora"):
-                with st.spinner("Analisando... Por favor, aguarde."):
-                    # O seu prompt mestre
-                    prompt = "Extraia os dados de produção desta imagem. Retorne em formato de tabela e depois em bloco de código CSV (ponto e vírgula)."
+            if st.button("📊 Extrair Dados"):
+                with st.spinner("O Gemini 3 está analisando..."):
+                    # Prompt focado em extração logística
+                    prompt = """
+                    Analise esta imagem de diário de produção de tintas e extraia:
+                    - Família e Produto
+                    - Lote
+                    - Horários de pigmentação (para produtos coloridos, é o horário mais antigo) e horários de liberação físico-química (o horário mais tardio) (HH:MM)
+                    - Viscosidade, pH e Densidade
                     
-                    try:
-                        response = model.generate_content([prompt, img])
-                        st.success("Concluído!")
-                        st.markdown(response.text)
-                    except Exception as e:
-                        if "429" in str(e):
-                            st.error("Limite de velocidade atingido! Aguarde 60 segundos antes de tentar a próxima foto.")
-                        else:
-                            st.error(f"Erro: {e}")
-                            
-    except Exception as e:
-        st.error(f"Erro na configuração: {e}")
-else:
-    st.info("Aguardando API Key...")
+                    Apresente o resultado primeiro em uma Tabela organizada 
+                    e depois em um bloco de código CSV usando ponto e vírgula (;).
+                    """
+                    
+                    response = model.generate_content([prompt, img])
+                    
+                    st.success("Análise Concluída!")
+                    st.markdown(response.text)
 
+    except Exception as e:
+        # Tratamento de erro amigável
+        if "404" in str(e):
+            st.error("Erro 404: O modelo 'gemini-2.0-flash-exp' não foi encontrado. Tente 'models/gemini-1.5-flash'.")
+        elif "429" in str(e):
+            st.error("Erro 429: Limite de uso atingido. Aguarde 60 segundos.")
+        else:
+            st.error(f"Ocorreu um erro: {e}")
+else:
+    st.warning("⚠️ Por favor, insira sua API Key na barra lateral para começar.")
+
+st.markdown("---")
+st.caption("Desenvolvido para automação de processos logísticos.")
