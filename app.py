@@ -1,73 +1,111 @@
 import streamlit as st
 import google.generativeai as genai
 from PIL import Image
-import pandas as pd # Biblioteca para facilitar a criação do arquivo
+import pandas as pd
+from datetime import datetime
+import io
 
+# 1. Configuração da Página
 st.set_page_config(page_title="Extrator Logístico de Tintas", layout="wide")
 
-st.title("🎨 Extrator de Produção e Qualidade")
-st.markdown("---")
+# Inicializar o histórico na sessão se não existir
+if 'historico' not in st.session_state:
+    st.session_state.historico = pd.DataFrame()
 
+st.title("🎨 Extrator Pro com Histórico")
+
+# 2. Configuração da API Key
 try:
     api_key = st.secrets["GEMINI_CHAVE"]
     genai.configure(api_key=api_key)
 except Exception:
-    st.error("Erro: API Key 'GEMINI_CHAVE' não encontrada nos Secrets.")
+    st.error("Erro: API Key não encontrada nos Secrets.")
     st.stop()
 
-model = genai.GenerativeModel('gemini-3-flash-preview')
+# 3. Carregamento da Lista de Produtos
+@st.cache_data
+def carregar_lista_produtos():
+    try:
+        df_prod = pd.read_csv('lista_produtos.csv', sep=None, engine='python')
+        return ", ".join(df_prod.iloc[:, 0].astype(str).tolist())
+    except:
+        return "Lista não carregada."
 
-PROMPT_SISTEMA = """
-VOCÊ É UM ANALISTA DE CONTROLO DE QUALIDADE INDUSTRIAL ESPECIALISTA EM OCR.
-Extraia os dados do diário de produção seguindo estas regras:
+produtos_referencia = carregar_lista_produtos()
+model = genai.GenerativeModel('gemini-1.5-flash')
 
-ORDEM DAS COLUNAS:
-1. Produto / Família; 2. Lote; 3. Horário de Pigmentação (Início - Fim); 4. Horário de Análises FQ (Início - Fim); 5. Viscosidade (adicione "KU"); 6. pH (use vírgula); 7. Densidade (use vírgula); 8. Status.
+# --- CRIAÇÃO DAS ABAS ---
+tab1, tab2 = st.tabs(["🚀 Nova Extração", "📚 Histórico Acumulado"])
 
-REGRAS:
-- Substitua PONTO por VÍRGULA em todos os valores numéricos de pH e Densidade.
-- Use ponto e vírgula (;) como único separador de colunas no bloco CSV.
-- Se não houver dados, use "---".
-
-SAÍDA:
-1. Tabela Markdown.
-2. Bloco de código CSV completo.
-"""
-
-uploaded_file = st.file_uploader("Carregue a foto do diário", type=["jpg", "jpeg", "png"])
-
-if uploaded_file:
-    image = Image.open(uploaded_file)
-    st.image(image, caption="Documento Carregado", width=400)
+with tab1:
+    uploaded_file = st.file_uploader("Carregue a foto do diário", type=["jpg", "jpeg", "png"])
     
-    if st.button("🚀 Executar Extração"):
-        with st.spinner("O Gemini está processando..."):
-            try:
-                response = model.generate_content([PROMPT_SISTEMA, image])
-                resultado = response.text
-                
-                st.success("Extração concluída!")
-                st.markdown(resultado)
+    if uploaded_file:
+        image = Image.open(uploaded_file)
+        st.image(image, caption="Documento Atual", width=350)
+        
+        if st.button("Executar Extração"):
+            with st.spinner("Analisando..."):
+                try:
+                    prompt = f"""
+                    VOCÊ É UM ESPECIALISTA EM OCR INDUSTRIAL. 
+                    LISTA OFICIAL: [{produtos_referencia}]
+                    Extraia os dados em formato CSV (separado por ;) com as seguintes colunas EXATAS:
+                    Data Extração;Produto/Família;Lote;Início Pigmentação;Fim Pigmentação;Início Análises FQ;Fim Análises FQ;Viscosidade;pH;Densidade;Status
+                    
+                    REGRAS:
+                    - Na 'Data Extração' use: {datetime.now().strftime('%d/%m/%Y')}
+                    - pH e Densidade com VÍRGULA.
+                    - Viscosidade APENAS NÚMERO.
+                    - Use o nome oficial da lista se encontrar correspondência.
+                    - Retorne APENAS as linhas de dados, sem cabeçalho repetido.
+                    """
+                    
+                    response = model.generate_content([prompt, image])
+                    dados_conferência = response.text
+                    
+                    # Processar a resposta para o DataFrame do Histórico
+                    # Criamos um DataFrame temporário com a nova extração
+                    df_temp = pd.read_csv(io.StringIO(dados_conferência), sep=';', header=None, names=[
+                        "Data Extração", "Produto", "Lote", "Ini Pig", "Fim Pig", "Ini FQ", "Fim FQ", "Visc", "pH", "Dens", "Status"
+                    ])
+                    
+                    # Adicionar ao histórico na sessão
+                    st.session_state.historico = pd.concat([st.session_state.historico, df_temp], ignore_index=True)
+                    
+                    st.success("Dados extraídos e adicionados ao histórico!")
+                    st.table(df_temp)
+                    
+                except Exception as e:
+                    st.error(f"Erro: {e}")
 
-                # Lógica para criar o botão de download
-                # Tentamos isolar apenas a parte CSV da resposta
-                if "csv" in resultado:
-                    csv_content = resultado.split("csv")[1].split("```")[0].strip()
-                elif ";" in resultado:
-                    # Caso o modelo não coloque os backticks mas use ponto e vírgula
-                    lines = [l for l in resultado.split('\n') if ';' in l]
-                    csv_content = "\n".join(lines)
-                else:
-                    csv_content = resultado
-
-                st.download_button(
-                    label="📥 Baixar Dados para Excel (CSV)",
-                    data=csv_content,
-                    file_name="extração_produção.csv",
-                    mime="text/csv",
-                )
-                
-            except Exception as e:
-                st.error(f"Erro: {e}")
+with tab2:
+    st.header("Histórico de Extrações")
+    
+    if not st.session_state.historico.empty:
+        # Filtro de Data
+        datas_disponiveis = st.session_state.historico['Data Extração'].unique()
+        data_selecionada = st.selectbox("Filtrar por data:", datas_disponiveis)
+        
+        # Filtrar o DataFrame
+        df_filtrado = st.session_state.historico[st.session_state.historico['Data Extração'] == data_selecionada]
+        
+        st.dataframe(df_filtrado, use_container_width=True)
+        
+        # Botão de Download para a data específica
+        csv_filtrado = df_filtrado.to_csv(index=False, sep=';', encoding='utf-8-sig')
+        
+        st.download_button(
+            label=f"📥 Baixar CSV de {data_selecionada}",
+            data=csv_filtrado,
+            file_name=f"producao_{data_selecionada.replace('/', '_')}.csv",
+            mime="text/csv",
+        )
+        
+        if st.button("Limpar todo o histórico"):
+            st.session_state.historico = pd.DataFrame()
+            st.rerun()
+    else:
+        st.info("Nenhuma extração realizada nesta sessão ainda.")
 
 st.markdown("---")
