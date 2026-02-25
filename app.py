@@ -32,7 +32,7 @@ def carregar_lista_produtos():
         return "Lista não carregada."
 
 produtos_referencia = carregar_lista_produtos()
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-3-flash-preview')
 
 # --- CRIAÇÃO DAS ABAS ---
 tab1, tab2 = st.tabs(["🚀 Nova Extração", "📚 Histórico Acumulado"])
@@ -109,3 +109,4 @@ with tab2:
         st.info("Nenhuma extração realizada nesta sessão ainda.")
 
 st.markdown("---")
+
