@@ -40,7 +40,7 @@ def carregar_lista_produtos():
     return []
 
 lista_oficial = carregar_lista_produtos()
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-3-flash-preview')
 
 # --- INTERFACE POR ABAS ---
 tab1, tab2 = st.tabs(["🚀 Nova Extração", "📚 Histórico Acumulado"])
@@ -164,3 +164,4 @@ with tab2:
 
 st.markdown("---")
 st.caption("v2.2 | Sistema de Apoio à Produção com Inteligência Cronológica, Fuzzy Matching e CAPSLOCK.")
+
