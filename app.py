@@ -36,7 +36,7 @@ def carregar_lista_produtos():
     return []
 
 lista_oficial = carregar_lista_produtos()
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-3-flash-preview')
 
 # --- ABAS ---
 tab1, tab2 = st.tabs(["🚀 Nova Extração", "📚 Histórico Acumulado"])
@@ -124,3 +124,4 @@ with tab2:
         df_filtrado.to_csv(csv_buffer, index=False, sep=';', encoding='utf-8-sig')
         st.download_button(label=f"📥 Baixar CSV de {data_sel}", data=csv_buffer.getvalue(), 
                            file_name=f"extracao_{data_sel.replace('/', '_')}.csv", mime="text/csv")
+
