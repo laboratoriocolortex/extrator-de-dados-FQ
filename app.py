@@ -12,7 +12,7 @@ st.set_page_config(page_title="Extrator Logístico de Tintas", layout="wide")
 if 'historico' not in st.session_state:
     st.session_state.historico = pd.DataFrame()
 
-st.title("🚀 Extrator Industrial - Inteligência de Produtos")
+st.title("🚀 Acompanhamento do Laboratório")
 
 # 2. Configuração da API Key
 try:
@@ -124,3 +124,4 @@ with tab2:
                            file_name=f"extração_{data_sel.replace('/', '_')}.csv", mime="text/csv")
     else:
         st.info("Histórico vazio.")
+
