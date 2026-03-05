@@ -54,9 +54,17 @@ if "historico" not in st.session_state:
 @st.cache_data
 def carregar_lista_produtos():
     try:
-        # Tenta ler o arquivo CSV de produtos
-        df = pd.read_csv("lista_produtos.csv", sep=";")
-        return df.iloc[:, 0].astype(str).tolist() # Assume que os nomes estão na primeira coluna
+        # Tenta ler o arquivo CSV de produtos com UTF-8
+        df = pd.read_csv("lista_produtos.csv", sep=";", encoding="utf-8")
+        return df.iloc[:, 0].astype(str).tolist()
+    except UnicodeDecodeError:
+        try:
+            # Se der erro de Unicode, tenta ler com a codificação padrão do Windows/Excel
+            df = pd.read_csv("lista_produtos.csv", sep=";", encoding="latin1")
+            return df.iloc[:, 0].astype(str).tolist()
+        except Exception as e:
+            st.error(f"Erro ao ler o arquivo com encoding latin1: {e}")
+            return []
     except FileNotFoundError:
         st.warning("Arquivo 'lista_produtos.csv' não encontrado. A validação de nome com thefuzz será ignorada.")
         return []
@@ -126,3 +134,4 @@ if st.session_state.historico:
         file_name="historico_producao.csv",
         mime="text/csv"
     )
+
