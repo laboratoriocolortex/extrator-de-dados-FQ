@@ -1,85 +1,128 @@
 import streamlit as st
+import pandas as pd
+from thefuzz import process
 import google.generativeai as genai
 from PIL import Image
-import pandas as pd
-from datetime import datetime
-import io
-from thefuzz import process
 
-# Configuração da Página
-st.set_page_config(page_title="Extrator Industrial Pro 3.1", layout="wide")
+# 1. Configuração da página
+st.set_page_config(page_title="Leitor de Diários de Produção", layout="wide")
 
-# Gerenciamento de Histórico
-if 'historico' not in st.session_state:
-    st.session_state.historico = pd.DataFrame()
-
-# Configuração do Modelo
+# 2. Configuração da API do Gemini usando st.secrets
 try:
     genai.configure(api_key=st.secrets["GEMINI_CHAVE"])
-    model = genai.GenerativeModel('gemini-1.5-pro') # 3.1 Pro Preview
-except:
-    st.error("Erro na API Key. Verifique os Secrets.")
+except KeyError:
+    st.error("Chave da API não encontrada. Configure st.secrets['GEMINI_CHAVE'].")
     st.stop()
 
-# Cache da Lista Mestra
+# 3. Instruções do Sistema para o Modelo
+SYSTEM_INSTRUCTION = """
+Atue como um Engenheiro de Dados e Especialista em Controle de Qualidade Industrial. Sua tarefa é processar imagens de diários de produção e etiquetas de tintas.
+
+REGRAS DE PROCESSAMENTO VISUAL:
+1. IDENTIFICAÇÃO DE PRODUTO: Combine o nome do produto, a cor e a litragem/peso detectados na etiqueta (Ex: COLORMAX AZUL 15L).
+2. DISTINÇÃO DE CORES: 
+   - Se a etiqueta física for de cor DOURADA ou BRONZE, você deve obrigatoriamente adicionar o sufixo "COR SOB ENCOMENDA" ao nome do produto.
+   - Se a etiqueta for AMARELA ou de outra cor padrão, ignore esta instrução.
+3. LEITURA DE MANUSCRITOS: Decifre os horários e valores técnicos escritos à mão.
+4. LÓGICA CRONOLÓGICA:
+   - O primeiro intervalo de horário (o que inicia mais cedo no dia) deve ser definido como PIGMENTAÇÃO.
+   - O segundo intervalo de horário (posterior ao primeiro) deve ser definido como ANÁLISE FQ.
+
+REGRAS DE FORMATAÇÃO (ESTRITAS):
+- Saída: Forneça a resposta estritamente em uma única linha no formato CSV, usando ponto e vírgula (;) como separador.
+- Letras: Tudo deve ser retornado em CAPSLOCK (MAIÚSCULAS).
+- Números: 
+  - Viscosidade (Visc) deve ser um número inteiro.
+  - pH e Densidade devem usar VÍRGULA como separador decimal (ex: 8,2 e 1,05).
+- Ordem das Colunas: Produto;Lote;IniPig;FimPig;IniFQ;FimFQ;Visc;pH;Dens;Status
+
+PERSONALIDADE:
+Seja preciso e não adicione nenhum texto explicativo, saudações ou comentários antes ou depois da linha CSV. Se não encontrar um dado, use "---".
+"""
+
+# Inicialização do modelo Gemini 2.5 Flash (ideal para visão e texto)
+model = genai.GenerativeModel(
+    model_name="gemini-2.5-flash",
+    system_instruction=SYSTEM_INSTRUCTION
+)
+
+# 4. Inicialização do Histórico no Session State
+if "historico" not in st.session_state:
+    st.session_state.historico = []
+
+# 5. Carregamento da lista de produtos para o thefuzz
 @st.cache_data
-def load_products():
+def carregar_lista_produtos():
     try:
-        df = pd.read_csv('lista_produtos.csv', sep=None, engine='python', encoding='latin-1')
-        return df.iloc[:, 0].dropna().astype(str).str.upper().tolist()
-    except: return []
+        # Tenta ler o arquivo CSV de produtos
+        df = pd.read_csv("lista_produtos.csv", sep=";")
+        return df.iloc[:, 0].astype(str).tolist() # Assume que os nomes estão na primeira coluna
+    except FileNotFoundError:
+        st.warning("Arquivo 'lista_produtos.csv' não encontrado. A validação de nome com thefuzz será ignorada.")
+        return []
 
-lista_produtos = load_products()
+lista_produtos = carregar_lista_produtos()
 
-st.title("🚀 Extrator de Produção - Gemini 1.5 Pro Preview")
+# Interface do Usuário
+st.title("🏭 Processamento de Diários de Produção e Etiquetas")
 
-tab1, tab2 = st.tabs(["🚀 Extração", "📚 Histórico"])
+# File Uploader para Imagens
+uploaded_file = st.file_uploader("Envie a imagem do diário/etiqueta", type=["jpg", "jpeg", "png"])
 
-with tab1:
-    img_file = st.file_uploader("Suba a foto", type=['jpg', 'png', 'jpeg'])
-    if img_file:
-        img = Image.open(img_file)
-        st.image(img, width=400)
-        
-        if st.button("Analisar com Alta Precisão"):
-            with st.spinner("Decifrando manuscritos e cores..."):
-                try:
-                    # Prompt que vai para a "cabeça" da IA
-                    sys_prompt = f"""
-                    Extraia os dados da etiqueta e anotações:
-                    - TUDO EM CAPSLOCK.
-                    - Etiquetas Bronze/Douradas: Produto + ' COR SOB ENCOMENDA'.
-                    - Horário menor: PIGMENTAÇÃO. Horário maior: ANÁLISE FQ.
-                    - Saída CSV (separador ;): Produto;Lote;IniPig;FimPig;IniFQ;FimFQ;Visc;pH;Dens;Status
-                    Data: {datetime.now().strftime('%d/%m/%Y')}
-                    """
+if uploaded_file is not None:
+    image = Image.open(uploaded_file)
+    st.image(image, caption="Imagem Carregada", width=400)
+    
+    if st.button("Processar Imagem", type="primary"):
+        with st.spinner("Analisando imagem com Gemini..."):
+            try:
+                # Chamada para o modelo passando a imagem
+                response = model.generate_content([image, "Extraia os dados da imagem conforme as instruções do sistema."])
+                resultado_csv = response.text.strip()
+                
+                # Colunas esperadas conforme a instrução
+                colunas = ["Produto", "Lote", "IniPig", "FimPig", "IniFQ", "FimFQ", "Visc", "pH", "Dens", "Status"]
+                valores = resultado_csv.split(";")
+                
+                if len(valores) == len(colunas):
+                    produto_extraido = valores[0]
                     
-                    response = model.generate_content([sys_prompt, img])
-                    res_text = response.text
-                    
-                    # Processamento da linha CSV
-                    if ";" in res_text:
-                        line = [l for l in res_text.split('\n') if ';' in l][0]
-                        df_row = pd.read_csv(io.StringIO(line), sep=';', header=None, names=[
-                            "Produto", "Lote", "IniPig", "FimPig", "IniFQ", "FimFQ", "Visc", "pH", "Dens", "Status"
-                        ])
-
-                        # Validação Fuzzy contra os 792 itens
-                        if lista_produtos:
-                            best_match = process.extractOne(str(df_row['Produto'][0]).upper(), lista_produtos)
-                            if best_match[1] > 70: df_row['Produto'] = best_match[0]
-
-                        # Formatação final
-                        df_row['Visc'] = pd.to_numeric(df_row['Visc'], errors='coerce').fillna(0).astype(int)
-                        df_row.insert(0, "Data", datetime.now().strftime('%d/%m/%Y'))
+                    # Validação com thefuzz
+                    if lista_produtos:
+                        melhor_correspondencia, pontuacao = process.extractOne(produto_extraido, lista_produtos)
                         
-                        st.session_state.historico = pd.concat([st.session_state.historico, df_row], ignore_index=True)
-                        st.table(df_row)
-                except Exception as e:
-                    st.error(f"Erro: {e}. Aguarde 1 minuto se for erro de cota.")
+                        # Se a pontuação for boa (ex: >= 80), substitui pelo nome oficial
+                        if pontuacao >= 80:
+                            valores[0] = melhor_correspondencia
+                            st.success(f"✅ Produto validado: **{produto_extraido}** ➔ **{melhor_correspondencia}** (Score: {pontuacao})")
+                        else:
+                            st.warning(f"⚠️ Baixa correspondência na lista para: **{produto_extraido}** (Melhor: {melhor_correspondencia} com score {pontuacao})")
+                    
+                    # Salva no histórico
+                    registro = dict(zip(colunas, valores))
+                    st.session_state.historico.append(registro)
+                    st.success("Dados extraídos e adicionados ao histórico com sucesso!")
+                    
+                else:
+                    st.error(f"Erro de formatação na resposta do modelo. Esperado {len(colunas)} colunas, recebido {len(valores)}.\nResposta bruta: {resultado_csv}")
+            
+            except Exception as e:
+                st.error(f"Erro ao processar a imagem: {e}")
 
-with tab2:
-    if not st.session_state.historico.empty:
-        st.dataframe(st.session_state.historico)
-        csv = st.session_state.historico.to_csv(index=False, sep=';', encoding='utf-8-sig')
-        st.download_button("📥 Baixar CSV", csv, "producao.csv", "text/csv")
+# 6. Exibição e Download do Histórico
+if st.session_state.historico:
+    st.divider()
+    st.subheader("📋 Histórico de Processamento")
+    
+    df_historico = pd.DataFrame(st.session_state.historico)
+    st.dataframe(df_historico, use_container_width=True)
+    
+    # Configuração do CSV para download (sep=';', encoding='utf-8-sig')
+    csv_data = df_historico.to_csv(index=False, sep=";", encoding="utf-8-sig")
+    
+    st.download_button(
+        label="📥 Baixar Histórico em CSV",
+        data=csv_data,
+        file_name="historico_producao.csv",
+        mime="text/csv"
+    )
