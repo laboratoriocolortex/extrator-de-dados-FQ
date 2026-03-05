@@ -1,114 +1,113 @@
 import streamlit as st
-import google.generativeai as genai
-from PIL import Image
 import pandas as pd
-from datetime import datetime
+from PIL import Image
+import numpy as np
+import easyocr
 import io
+import re
+from datetime import datetime
 from thefuzz import process
 
-# 1. Configuração da Página
-st.set_page_config(page_title="Extrator Logístico Pro", layout="wide")
+# Configuração da página
+st.set_page_config(page_title="Extrator Industrial Local", layout="wide")
 
+# Inicializa o motor de OCR (Lê Português e Números)
+@st.cache_resource
+def carregar_leitor():
+    return easyocr.Reader(['pt'])
+
+reader = carregar_leitor()
+
+# Inicializa o histórico
 if 'historico' not in st.session_state:
     st.session_state.historico = pd.DataFrame()
 
-st.title("🎨 Extrator Industrial - Inteligência Visual Pro")
-st.info("Utilizando Gemini 1.5 Pro: Máxima precisão em cores e manuscritos.")
-
-# 2. Configuração da API Key
-try:
-    api_key = st.secrets["GEMINI_CHAVE"]
-    genai.configure(api_key=api_key)
-except Exception:
-    st.error("Erro: API Key não encontrada nos Secrets.")
-    st.stop()
-
-# 3. Carregamento da Lista de Produtos (792 itens em CAPSLOCK)
+# Carrega a lista oficial de 792 produtos
 @st.cache_data
-def carregar_lista_produtos():
-    codecs = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
-    for c in codecs:
-        try:
-            df_prod = pd.read_csv('lista_produtos.csv', sep=None, engine='python', encoding=c)
-            lista = df_prod.iloc[:, 0].dropna().astype(str).str.strip().str.upper().tolist()
-            return lista
-        except: continue
-    return []
+def carregar_lista():
+    try:
+        df = pd.read_csv('lista_produtos.csv', sep=None, engine='python')
+        return df.iloc[:, 0].dropna().astype(str).str.upper().tolist()
+    except:
+        return []
 
-lista_oficial = carregar_lista_produtos()
-# DEFINIÇÃO DO MODELO PRO
-model = genai.GenerativeModel('gemini-1.5-pro')
+lista_oficial = carregar_lista()
 
-# --- INTERFACE ---
-tab1, tab2 = st.tabs(["🚀 Nova Extração", "📚 Histórico"])
+st.title("🏭 Extrator de Produção (OCR Local)")
+st.info("Este app lê etiquetas impressas e dados manuscritos sem usar APIs externas.")
 
-with tab1:
-    uploaded_file = st.file_uploader("Carregue a foto da etiqueta ou diário", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("Carregue a foto do diário/etiqueta", type=["jpg", "jpeg", "png"])
+
+if uploaded_file:
+    image = Image.open(uploaded_file)
+    st.image(image, width=400, caption="Documento para análise")
     
-    if uploaded_file:
-        image = Image.open(uploaded_file)
-        st.image(image, caption="Imagem para análise", width=400)
-        
-        if st.button("Executar Extração Profissional"):
-            with st.spinner("O Gemini Pro está analisando os detalhes..."):
-                try:
-                    prompt = f"""
-                    Atue como um inspetor de qualidade de tintas. Extraia os dados em CAPSLOCK.
-                    
-                    REGRAS DE PRODUTO:
-                    1. NOME COMPLETO: Extraia Produto + Cor + Litragem (Ex: COLORMAX PRETO 15L).
-                    2. ETIQUETAS DOURADAS/BRONZE: Se a etiqueta for dourada/bronze, adicione "COR SOB ENCOMENDA" ao nome.
-                    3. ETIQUETAS AMARELAS: São produtos de linha normal.
-                    
-                    REGRAS CRONOLÓGICAS:
-                    - Compare os horários manuscritos. O intervalo que inicia mais cedo é PIGMENTAÇÃO. O posterior é ANÁLISE FQ.
-                    
-                    SAÍDA CSV (separado por ;):
-                    Produto;Lote;IniPig;FimPig;IniFQ;FimFQ;Visc;pH;Dens;Status
-                    
-                    VALORES: Viscosidade (Inteiro), pH/Densidade (Vírgula). Data: {datetime.now().strftime('%d/%m/%Y')}
-                    """
-                    
-                    response = model.generate_content([prompt, image])
-                    texto = response.text
-                    
-                    linhas = [l for l in texto.split('\n') if ';' in l and 'Produto' not in l]
-                    
-                    if linhas:
-                        csv_io = io.StringIO("\n".join(linhas))
-                        df_temp = pd.read_csv(csv_io, sep=';', header=None, names=[
-                            "Produto", "Lote", "Ini Pig", "Fim Pig", "Ini FQ", "Fim FQ", "Visc", "pH", "Dens", "Status"
-                        ])
-                        
-                        # Validação Fuzzy contra os 792 itens
-                        if lista_oficial:
-                            def validar(n):
-                                m = process.extractOne(str(n).upper(), lista_oficial)
-                                return m[0] if m and m[1] > 70 else str(n).upper()
-                            df_temp['Produto'] = df_temp['Produto'].apply(validar)
+    if st.button("🔍 Ler Imagem"):
+        with st.spinner("Processando texto impresso e manuscrito..."):
+            img_array = np.array(image)
+            
+            # O EasyOCR tenta ler blocos de texto
+            # detail=1 retorna a posição do texto, o que ajuda a organizar a leitura
+            resultados = reader.readtext(img_array)
+            
+            texto_completo = " ".join([res[1].upper() for res in resultados])
+            
+            # --- LÓGICA DE EXTRAÇÃO ---
+            
+            # 1. Identificar Produto (Comparação com lista de 792 itens)
+            produto_final = "NÃO IDENTIFICADO"
+            if lista_oficial:
+                match = process.extractOne(texto_completo, lista_oficial)
+                if match and match[1] > 60:
+                    produto_final = match[0]
+            
+            # 2. Identificar Horários (Padrão HH:MM ou HHMM)
+            # Busca padrões como 08:30, 10-15, etc.
+            horarios = re.findall(r'\b\d{2}[:\-\s]?\d{2}\b', texto_completo)
+            
+            # 3. Identificar Lote (Geralmente números após a palavra LOTE)
+            lote_match = re.search(r'LOTE\s?(\w+)', texto_completo)
+            lote = lote_match.group(1) if lote_match else "---"
 
-                        # Padronização Final
-                        df_temp['Lote'] = df_temp['Lote'].astype(str).str.upper()
-                        df_temp['Status'] = df_temp['Status'].astype(str).str.upper()
-                        df_temp['Visc'] = pd.to_numeric(df_temp['Visc'], errors='coerce').fillna(0).astype(int)
-                        df_temp['pH'] = df_temp['pH'].astype(str).str.replace('.', ',', regex=False)
-                        df_temp['Dens'] = df_temp['Dens'].astype(str).str.replace('.', ',', regex=False)
-                        df_temp.insert(0, "Data Extração", datetime.now().strftime('%d/%m/%Y'))
-                        
-                        st.session_state.historico = pd.concat([st.session_state.historico, df_temp], ignore_index=True)
-                        st.success("Extração concluída com sucesso!")
-                        st.table(df_temp)
-                    else:
-                        st.error("Não foi possível formatar os dados. Tente uma foto mais clara.")
+            # 4. Dados de Análise (Busca por números isolados com vírgula para pH/Densidade)
+            numeros_decimais = re.findall(r'\d+[,\.]\d+', texto_completo)
+            ph = numeros_decimais[0] if len(numeros_decimais) > 0 else "0,0"
+            dens = numeros_decimais[1] if len(numeros_decimais) > 1 else "0,00"
+
+            # Criar dicionário de dados
+            dados = {
+                "Data": datetime.now().strftime('%d/%m/%Y'),
+                "Produto": produto_final,
+                "Lote": lote.upper(),
+                "Horários Detectados": " | ".join(horarios),
+                "pH": ph.replace('.', ','),
+                "Dens": dens.replace('.', ','),
+                "Status": "APROVADO" if "APROV" in texto_completo else "ANÁLISE",
+                "Texto Bruto": texto_completo[:150] + "..."
+            }
+            
+            # Mostrar resultado e permitir edição manual antes de salvar
+            st.subheader("📝 Conferência de Dados")
+            with st.form("conferencia"):
+                col1, col2 = st.columns(2)
+                p_final = col1.text_input("Produto", dados["Produto"]).upper()
+                l_final = col1.text_input("Lote", dados["Lote"]).upper()
+                h_final = col2.text_input("Horários (Pigmentação/FQ)", dados["Horários Detectados"])
+                s_final = col2.selectbox("Status", ["APROVADO", "REPROVADO", "PENDENTE"], index=0 if dados["Status"]=="APROVADO" else 2)
                 
-                except Exception as e:
-                    if "429" in str(e):
-                        st.error("Limite de cota atingido. Aguarde 60 segundos para a próxima foto.")
-                    else:
-                        st.error(f"Erro: {e}")
+                if st.form_submit_button("Confirmar e Salvar no Histórico"):
+                    df_novo = pd.DataFrame([{
+                        "Data": dados["Data"], "Produto": p_final, "Lote": l_final, 
+                        "Horários": h_final, "Status": s_final, "pH": dados["pH"], "Dens": dados["Dens"]
+                    }])
+                    st.session_state.historico = pd.concat([st.session_state.historico, df_novo], ignore_index=True)
+                    st.success("Salvo com sucesso!")
 
-with tab2:
-    if not st.session_state.historico.empty:
-        st.dataframe(st.session_state.historico, use_container_width=True)
-        csv_ready = st.session_state.historico.to_csv(index=False, sep=';', encoding='utf-8-sig')
-        st.download_button("📥 Baixar CSV para Excel", csv_ready, "producao.csv", "text/csv")
+# --- HISTÓRICO E DOWNLOAD ---
+if not st.session_state.historico.empty:
+    st.divider()
+    st.subheader("📊 Histórico Acumulado")
+    st.dataframe(st.session_state.historico, use_container_width=True)
+    
+    csv = st.session_state.historico.to_csv(index=False, sep=';', encoding='utf-8-sig')
+    st.download_button("📥 Baixar Planilha CSV", csv, f"producao_{datetime.now().strftime('%d_%m')}.csv", "text/csv")
