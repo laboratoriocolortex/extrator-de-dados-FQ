@@ -1,6 +1,6 @@
 streamlit
-google-generativeai
 Pillow
 pandas
 thefuzz
+opencv-python-headless
 python-Levenshtein
