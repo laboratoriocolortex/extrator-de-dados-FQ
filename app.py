@@ -35,7 +35,7 @@ REGRAS DE FORMATAÇÃO (ESTRITAS):
 """
 
 model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash", # Use 'gemini-1.5-pro' para maior precisão em manuscritos
+    model_name="gemini-2.5-flash", # Use 'gemini-1.5-pro' para maior precisão em manuscritos
     system_instruction=SYSTEM_INSTRUCTION
 )
 
@@ -122,3 +122,4 @@ if st.session_state.historico:
         file_name="producao_consolidada.csv",
         mime="text/csv"
     )
+
