@@ -1,22 +1,85 @@
-Atue como um Engenheiro de Dados e Especialista em Controle de Qualidade Industrial. Sua tarefa é processar imagens de diários de produção e etiquetas de tintas.
+import streamlit as st
+import google.generativeai as genai
+from PIL import Image
+import pandas as pd
+from datetime import datetime
+import io
+from thefuzz import process
 
-REGRAS DE PROCESSAMENTO VISUAL:
-1. IDENTIFICAÇÃO DE PRODUTO: Combine o nome do produto, a cor e a litragem/peso detectados na etiqueta (Ex: COLORMAX AZUL 15L).
-2. DISTINÇÃO DE CORES: 
-   - Se a etiqueta física for de cor DOURADA ou BRONZE, você deve obrigatoriamente adicionar o sufixo "COR SOB ENCOMENDA" ao nome do produto.
-   - Se a etiqueta for AMARELA ou de outra cor padrão, ignore esta instrução.
-3. LEITURA DE MANUSCRITOS: Decifre os horários e valores técnicos escritos à mão.
-4. LÓGICA CRONOLÓGICA:
-   - O primeiro intervalo de horário (o que inicia mais cedo no dia) deve ser definido como PIGMENTAÇÃO.
-   - O segundo intervalo de horário (posterior ao primeiro) deve ser definido como ANÁLISE FQ.
+# Configuração da Página
+st.set_page_config(page_title="Extrator Industrial Pro 3.1", layout="wide")
 
-REGRAS DE FORMATAÇÃO (ESTRITAS):
-- Saída: Forneça a resposta estritamente em uma única linha no formato CSV, usando ponto e vírgula (;) como separador.
-- Letras: Tudo deve ser retornado em CAPSLOCK (MAIÚSCULAS).
-- Números: 
-  - Viscosidade (Visc) deve ser um número inteiro.
-  - pH e Densidade devem usar VÍRGULA como separador decimal (ex: 8,2 e 1,05).
-- Ordem das Colunas: Produto;Lote;IniPig;FimPig;IniFQ;FimFQ;Visc;pH;Dens;Status
+# Gerenciamento de Histórico
+if 'historico' not in st.session_state:
+    st.session_state.historico = pd.DataFrame()
 
-PERSONALIDADE:
-Seja preciso e não adicione nenhum texto explicativo, saudações ou comentários antes ou depois da linha CSV. Se não encontrar um dado, use "---".
+# Configuração do Modelo
+try:
+    genai.configure(api_key=st.secrets["GEMINI_CHAVE"])
+    model = genai.GenerativeModel('gemini-1.5-pro') # 3.1 Pro Preview
+except:
+    st.error("Erro na API Key. Verifique os Secrets.")
+    st.stop()
+
+# Cache da Lista Mestra
+@st.cache_data
+def load_products():
+    try:
+        df = pd.read_csv('lista_produtos.csv', sep=None, engine='python', encoding='latin-1')
+        return df.iloc[:, 0].dropna().astype(str).str.upper().tolist()
+    except: return []
+
+lista_produtos = load_products()
+
+st.title("🚀 Extrator de Produção - Gemini 1.5 Pro Preview")
+
+tab1, tab2 = st.tabs(["🚀 Extração", "📚 Histórico"])
+
+with tab1:
+    img_file = st.file_uploader("Suba a foto", type=['jpg', 'png', 'jpeg'])
+    if img_file:
+        img = Image.open(img_file)
+        st.image(img, width=400)
+        
+        if st.button("Analisar com Alta Precisão"):
+            with st.spinner("Decifrando manuscritos e cores..."):
+                try:
+                    # Prompt que vai para a "cabeça" da IA
+                    sys_prompt = f"""
+                    Extraia os dados da etiqueta e anotações:
+                    - TUDO EM CAPSLOCK.
+                    - Etiquetas Bronze/Douradas: Produto + ' COR SOB ENCOMENDA'.
+                    - Horário menor: PIGMENTAÇÃO. Horário maior: ANÁLISE FQ.
+                    - Saída CSV (separador ;): Produto;Lote;IniPig;FimPig;IniFQ;FimFQ;Visc;pH;Dens;Status
+                    Data: {datetime.now().strftime('%d/%m/%Y')}
+                    """
+                    
+                    response = model.generate_content([sys_prompt, img])
+                    res_text = response.text
+                    
+                    # Processamento da linha CSV
+                    if ";" in res_text:
+                        line = [l for l in res_text.split('\n') if ';' in l][0]
+                        df_row = pd.read_csv(io.StringIO(line), sep=';', header=None, names=[
+                            "Produto", "Lote", "IniPig", "FimPig", "IniFQ", "FimFQ", "Visc", "pH", "Dens", "Status"
+                        ])
+
+                        # Validação Fuzzy contra os 792 itens
+                        if lista_produtos:
+                            best_match = process.extractOne(str(df_row['Produto'][0]).upper(), lista_produtos)
+                            if best_match[1] > 70: df_row['Produto'] = best_match[0]
+
+                        # Formatação final
+                        df_row['Visc'] = pd.to_numeric(df_row['Visc'], errors='coerce').fillna(0).astype(int)
+                        df_row.insert(0, "Data", datetime.now().strftime('%d/%m/%Y'))
+                        
+                        st.session_state.historico = pd.concat([st.session_state.historico, df_row], ignore_index=True)
+                        st.table(df_row)
+                except Exception as e:
+                    st.error(f"Erro: {e}. Aguarde 1 minuto se for erro de cota.")
+
+with tab2:
+    if not st.session_state.historico.empty:
+        st.dataframe(st.session_state.historico)
+        csv = st.session_state.historico.to_csv(index=False, sep=';', encoding='utf-8-sig')
+        st.download_button("📥 Baixar CSV", csv, "producao.csv", "text/csv")
