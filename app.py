@@ -1,125 +1,123 @@
 import streamlit as st
 import pandas as pd
-from thefuzz import process
 import google.generativeai as genai
 from PIL import Image
+from thefuzz import process, fuzz
 import io
 
-# 1. Configuração da página
-st.set_page_config(page_title="Leitor de Diários Multilotes", layout="wide")
+# 1. Configuração da Página
+st.set_page_config(page_title="Extrator Industrial 3.1 Pro - Validação Rígida", layout="wide")
 
-# 2. Configuração da API do Gemini
+# 2. Configuração do Motor Pro
 try:
     genai.configure(api_key=st.secrets["GEMINI_CHAVE"])
-except KeyError:
-    st.error("Chave da API não encontrada. Configure st.secrets['GEMINI_CHAVE'].")
+    model = genai.GenerativeModel(
+        model_name="gemini-1.5-pro",
+        generation_config={"temperature": 0} 
+    )
+except Exception:
+    st.error("Erro na API Key. Verifique os Secrets.")
     st.stop()
 
-# 3. Instruções do Sistema (Ajustadas para Múltiplas Linhas)
-SYSTEM_INSTRUCTION = """
-Atue como um Engenheiro de Dados Industrial. Sua tarefa é processar imagens de diários de produção.
-A imagem pode conter UM ou VÁRIOS produtos/lotes. Extraia TODOS os que encontrar.
-
-REGRAS DE PROCESSAMENTO:
-1. IDENTIFICAÇÃO: Combine Nome + Cor + Litragem (Ex: COLORMAX AZUL 15L).
-2. ETIQUETAS DOURADAS/BRONZE: Adicione obrigatoriamente "COR SOB ENCOMENDA" ao nome.
-3. CRONOLOGIA: Primeiro horário = PIGMENTAÇÃO. Segundo horário (posterior) = ANÁLISE FQ.
-
-REGRAS DE FORMATAÇÃO (ESTRITAS):
-- Saída: Retorne APENAS as linhas no formato CSV (ponto e vírgula).
-- UMA LINHA POR PRODUTO/LOTE encontrado.
-- TUDO EM CAPSLOCK.
-- pH e Densidade: Use VÍRGULA como separador decimal.
-- Viscosidade: Apenas número inteiro.
-- Formato: Produto;Lote;IniPig;FimPig;IniFQ;FimFQ;Visc;pH;Dens;Status
-"""
-
-model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash", # Use 'gemini-1.5-pro' para maior precisão em manuscritos
-    system_instruction=SYSTEM_INSTRUCTION
-)
-
-if "historico" not in st.session_state:
-    st.session_state.historico = []
-
-# 4. Carregamento da lista de produtos
+# 3. Carregamento da Lista Oficial (792 Produtos)
 @st.cache_data
 def carregar_lista_produtos():
-    try:
-        df = pd.read_csv("lista_produtos.csv", sep=";", encoding="utf-8")
-        return df.iloc[:, 0].astype(str).tolist()
-    except:
+    for enc in ['utf-8', 'latin-1', 'cp1252']:
         try:
-            df = pd.read_csv("lista_produtos.csv", sep=";", encoding="latin1")
-            return df.iloc[:, 0].astype(str).tolist()
+            df = pd.read_csv("lista_produtos.csv", sep=";", encoding=enc)
+            return df.iloc[:, 0].dropna().astype(str).str.upper().tolist()
         except:
-            return []
+            continue
+    return []
 
-lista_produtos = carregar_lista_produtos()
+lista_oficial = carregar_lista_produtos()
 
-st.title("🏭 Processamento Multilotes - Diários e Etiquetas")
+# 4. Estado da Sessão
+if "df_validacao" not in st.session_state:
+    st.session_state.df_validacao = pd.DataFrame(columns=[
+        "Produto Lido (IA)", "Produto Oficial (Lista)", "Confiança %", "Lote", "IniPig", "FimPig", "Visc", "pH", "Dens", "Status"
+    ])
 
-uploaded_file = st.file_uploader("Envie a imagem (Pode conter vários lotes)", type=["jpg", "jpeg", "png"])
+# --- INTERFACE ---
+st.title("🚀 Extrator Industrial - Validação Rígida (90%)")
+st.markdown("---")
 
-if uploaded_file is not None:
+uploaded_file = st.file_uploader("Suba a imagem do diário ou etiquetas", type=["jpg", "jpeg", "png"])
+
+if uploaded_file:
     image = Image.open(uploaded_file)
-    st.image(image, caption="Imagem Carregada", width=450)
+    st.image(image, width=450, caption="Documento Detectado")
     
-    if st.button("Processar Toda a Imagem", type="primary"):
-        with st.spinner("Analisando todos os itens detectados..."):
+    if st.button("🔍 Processar e Validar Dados", type="primary"):
+        with st.spinner("Analisando com 90% de critério de similaridade..."):
             try:
-                # Solicita explicitamente todos os itens
-                response = model.generate_content([image, "Extraia TODOS os produtos e lotes presentes nesta imagem, um por linha."])
-                resultado_bruto = response.text.strip()
-                
-                linhas = resultado_bruto.split('\n')
-                colunas = ["Produto", "Lote", "IniPig", "FimPig", "IniFQ", "FimFQ", "Visc", "pH", "Dens", "Status"]
-                
-                contagem = 0
-                for linha in linhas:
-                    if ";" not in linha: continue
-                    
-                    valores = [v.strip() for v in linha.split(";")]
-                    
-                    if len(valores) == len(colunas):
-                        produto_extraido = valores[0]
-                        
-                        # Validação Fuzzy
-                        if lista_produtos:
-                            melhor_match, pontuacao = process.extractOne(produto_extraido, lista_produtos)
-                            if pontuacao >= 80:
-                                valores[0] = melhor_match
-                        
-                        registro = dict(zip(colunas, valores))
-                        st.session_state.historico.append(registro)
-                        contagem += 1
-                
-                if contagem > 0:
-                    st.success(f"✅ {contagem} lotes extraídos com sucesso!")
-                else:
-                    st.warning("Nenhum dado formatado foi encontrado. Verifique se a imagem está clara.")
-            
-            except Exception as e:
-                st.error(f"Erro ao processar: {e}")
+                # Prompt focado em manter a estrutura da linha
+                prompt = """Extraia todos os dados presentes na imagem.
+                REGRAS:
+                - TUDO EM CAPSLOCK.
+                - Saída em CSV (separador ;).
+                - Identifique Produto;Lote;IniPig;FimPig;Visc;pH;Dens;Status.
+                - Se a etiqueta for DOURADA/BRONZE, adicione 'COR SOB ENCOMENDA' ao produto.
+                """
 
-# 5. Exibição e Download
-if st.session_state.historico:
+                response = model.generate_content([image, prompt])
+                linhas = response.text.strip().split('\n')
+                
+                novos_itens = []
+                for linha in linhas:
+                    if ';' in linha and 'Produto;' not in linha:
+                        partes = [p.strip() for p in linha.split(';')]
+                        if len(partes) >= 8:
+                            prod_lido = partes[0].upper()
+                            
+                            # --- LÓGICA DE ASSOCIAÇÃO RÍGIDA (90%) ---
+                            prod_validado = ""
+                            score_final = 0
+                            
+                            if lista_oficial:
+                                # Usamos o scorer token_set_ratio para lidar com inversões de palavras
+                                match, score = process.extractOne(prod_lido, lista_oficial, scorer=fuzz.token_set_ratio)
+                                
+                                if score >= 90:
+                                    prod_validado = match
+                                    score_final = score
+                                else:
+                                    # NOVA INSTRUÇÃO: Identificação clara de não encontrado
+                                    prod_validado = "❌ PRODUTO NÃO ENCONTRADO NA LISTA"
+                                    score_final = score
+
+                            novos_itens.append([
+                                prod_lido, prod_validado, score_final,
+                                partes[1], partes[2], partes[3], partes[4], partes[5], partes[6], partes[7]
+                            ])
+
+                if novos_itens:
+                    df_temp = pd.DataFrame(novos_itens, columns=st.session_state.df_validacao.columns)
+                    st.session_state.df_validacao = pd.concat([st.session_state.df_validacao, df_temp], ignore_index=True)
+                    st.success("Processamento concluído.")
+            except Exception as e:
+                st.error(f"Erro no processamento: {e}")
+
+# --- REVISÃO E EDIÇÃO ---
+if not st.session_state.df_validacao.empty:
     st.divider()
-    col_titulo, col_limpar = st.columns([4, 1])
-    col_titulo.subheader("📋 Histórico de Processamento")
+    st.subheader("📋 Revisão Técnica dos Dados")
+    st.warning("⚠️ Atenção: Itens marcados com '❌' não atingiram 90% de similaridade e devem ser corrigidos manualmente.")
     
-    if col_limpar.button("🗑️ Limpar Tudo"):
-        st.session_state.historico = []
-        st.rerun()
-    
-    df_historico = pd.DataFrame(st.session_state.historico)
-    st.dataframe(df_historico, use_container_width=True)
-    
-    csv_data = df_historico.to_csv(index=False, sep=";", encoding="utf-8-sig")
-    st.download_button(
-        label="📥 Baixar Planilha CSV",
-        data=csv_data,
-        file_name="producao_consolidada.csv",
-        mime="text/csv"
+    # Editor de dados dinâmico
+    st.session_state.df_validacao = st.data_editor(
+        st.session_state.df_validacao,
+        num_rows="dynamic",
+        use_container_width=True,
+        key="editor_90_confianca"
     )
 
+    col1, col2 = st.columns(2)
+    
+    # Exportação
+    csv = st.session_state.df_validacao.to_csv(index=False, sep=";", encoding="utf-8-sig")
+    col1.download_button("📥 Baixar Planilha Validada", csv, "producao_90_precisao.csv", "text/csv")
+    
+    if col2.button("🗑️ Limpar Histórico"):
+        st.session_state.df_validacao = pd.DataFrame(columns=st.session_state.df_validacao.columns)
+        st.rerun()
