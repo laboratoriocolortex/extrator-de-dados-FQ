@@ -39,7 +39,7 @@ if "df_validacao" not in st.session_state:
     ])
 
 # --- INTERFACE ---
-st.title("🚀 Extrator Industrial - Validação Rígida (90%)")
+st.title("🚀 Acompanhamento de Liberações")
 st.markdown("---")
 
 uploaded_file = st.file_uploader("Suba a imagem do diário ou etiquetas", type=["jpg", "jpeg", "png"])
@@ -121,5 +121,6 @@ if not st.session_state.df_validacao.empty:
     if col2.button("🗑️ Limpar Histórico"):
         st.session_state.df_validacao = pd.DataFrame(columns=st.session_state.df_validacao.columns)
         st.rerun()
+
 
 
