@@ -6,96 +6,109 @@ from PIL import Image
 from thefuzz import process, fuzz
 import re
 
-# Configuração da página
-st.set_page_config(page_title="Extrator Industrial de Precisão", layout="wide")
+st.set_page_config(page_title="Extrator Industrial Hierárquico", layout="wide")
 
 @st.cache_resource
-def carregar_leitor():
-    # Carrega o motor de leitura para Português e Inglês
+def carregar_ocr():
     return easyocr.Reader(['pt', 'en'], gpu=False)
 
-reader = carregar_leitor()
+reader = carregar_ocr()
 
 @st.cache_data
-def carregar_lista_produtos():
+def carregar_lista_oficial():
     try:
         df = pd.read_csv("lista_produtos.csv", sep=";", encoding="latin-1")
         return df.iloc[:, 0].dropna().astype(str).str.upper().tolist()
     except:
         return []
 
-lista_oficial = carregar_lista_produtos()
+lista_produtos = carregar_lista_oficial()
 
-if "historico" not in st.session_state:
-    st.session_state.historico = pd.DataFrame()
+if "df_leitura" not in st.session_state:
+    st.session_state.df_leitura = pd.DataFrame()
 
-st.title("🏭 Leitor de Diário de Produção")
+st.title("🏭 Leitor de Diário - Fluxo de Identificação")
 
-uploaded_file = st.file_uploader("Suba a foto do diário", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("Envie a foto do diário", type=["jpg", "jpeg", "png"])
 
 if uploaded_file:
     image = Image.open(uploaded_file).convert('RGB')
-    st.image(image, width=600, caption="Imagem carregada")
+    st.image(image, width=500)
     
-    if st.button("🔍 Extrair Todos os Lotes", type="primary"):
-        with st.spinner("Agrupando etiquetas e manuscritos..."):
+    if st.button("🚀 Processar com Hierarquia Visual", type="primary"):
+        with st.spinner("Analisando Nome, Cor, Lote e Medidas..."):
             img_np = np.array(image)
-            # Lê o texto com coordenadas detalhadas
             resultados = reader.readtext(img_np, detail=1)
             
-            # Agrupar palavras que estão na mesma altura (Eixo Y)
-            blocos_por_linha = {}
-            tolerancia_altura = 50 # Define o que é considerado "mesma linha"
+            # Agrupamento por Linha (Y)
+            linhas = {}
+            margem_y = 60 
             
             for (bbox, texto, prob) in resultados:
-                centro_y = (bbox[0][1] + bbox[2][1]) / 2
-                encontrou = False
-                for y_ref in blocos_por_linha.keys():
-                    if abs(centro_y - y_ref) < tolerancia_altura:
-                        blocos_por_linha[y_ref].append(texto.upper())
-                        encontrou = True
-                        break
-                if not encontrou:
-                    blocos_por_linha[centro_y] = [texto.upper()]
-
-            registros_da_foto = []
-            
-            # Processa cada linha horizontal como um Lote único
-            for y in sorted(blocos_por_linha.keys()):
-                texto_linha = " ".join(blocos_por_linha[y])
+                # Filtragem de "sujeira": ignora textos muito curtos (1 ou 2 letras soltas)
+                if len(texto.strip()) < 3 and not texto.isdigit():
+                    continue
                 
-                # Regex para pegar Horários (ex: 18:10 ou 18.10)
+                y_centro = (bbox[0][1] + bbox[2][1]) / 2
+                pertence = False
+                for y_ref in linhas.keys():
+                    if abs(y_centro - y_ref) < margem_y:
+                        linhas[y_ref].append({"txt": texto.upper(), "box": bbox})
+                        pertence = True
+                        break
+                if not pertence:
+                    linhas[y_centro] = [{"txt": texto.upper(), "box": bbox}]
+
+            dados_consolidados = []
+            
+            for y in sorted(linhas.keys()):
+                bloco = linhas[y]
+                # Une o texto da linha para busca de padrões
+                texto_linha = " ".join([b["txt"] for b in bloco])
+                
+                # --- IDENTIFICAÇÃO HIERÁRQUICA ---
+                
+                # 1. Lote (Padrão L - 12345)
+                lote_match = re.search(r'L\s*[-–]\s*(\d+)', texto_linha)
+                lote = lote_match.group(1) if lote_match else "---"
+                
+                # 2. Litragem (Número + L ou KG)
+                litragem_match = re.search(r'(\d+[\.,]?\d*)\s*(L|KG)', texto_linha)
+                litragem = litragem_match.group(0) if litragem_match else "---"
+                
+                # 3. Horários (Filtro para evitar pegar números de pH como hora)
                 horas = re.findall(r'\b(?:[012]?\d)[:\.\-][0-5]\d\b', texto_linha)
-                # Regex para pegar pH/Densidade (números com vírgula ou ponto)
+                
+                # 4. Análises (pH e Densidade - números com vírgula)
                 decimais = re.findall(r'\d+[,\.]\d+', texto_linha)
                 
-                # Validação Rígida 90% contra seu CSV
-                produto_validado = "❌ NÃO ENCONTRADO"
-                score = 0
-                if lista_oficial:
-                    match, score_match = process.extractOne(texto_linha, lista_oficial, scorer=fuzz.token_set_ratio)
-                    if score_match >= 90:
-                        produto_validado = match
-                        score = score_match
-                
-                # Organiza os dados extraídos
-                registros_da_foto.append({
-                    "Produto Lido": texto_linha[:40],
-                    "Produto Oficial": produto_validado,
-                    "Confiança": f"{score}%",
-                    "Horário 1": horas[0] if len(horas) > 0 else "-",
-                    "Horário 2": horas[1] if len(horas) > 1 else "-",
-                    "Analise 1": decimais[0] if len(decimais) > 0 else "-",
-                    "Analise 2": decimais[1] if len(decimais) > 1 else "-",
-                })
+                # 5. Validação do Produto (Fuzzy 90%)
+                # Tentamos validar o início da linha (onde costuma estar o nome/cor)
+                prod_validado = "❌ NÃO ENCONTRADO"
+                confianca = 0
+                if lista_produtos:
+                    match, score = process.extractOne(texto_linha, lista_produtos, scorer=fuzz.token_set_ratio)
+                    if score >= 90:
+                        prod_validado = match
+                        confianca = score
 
-            df_novo = pd.DataFrame(registros_da_foto)
-            st.session_state.historico = pd.concat([st.session_state.historico, df_novo], ignore_index=True)
+                if lote != "---" or prod_validado != "❌ NÃO ENCONTRADO":
+                    dados_consolidados.append({
+                        "Produto Oficial": prod_validado,
+                        "Lote": lote,
+                        "Litragem": litragem,
+                        "Início (Pig)": horas[0] if len(horas) > 0 else "---",
+                        "Fim (FQ)": horas[1] if len(horas) > 1 else "---",
+                        "pH": decimais[0] if len(decimais) > 0 else "---",
+                        "Densidade": decimais[1] if len(decimais) > 1 else "---",
+                        "Confiança %": confianca
+                    })
 
-# Exibição e Edição
-if not st.session_state.historico.empty:
-    st.subheader("📋 Tabela de Conferência")
-    st.session_state.historico = st.data_editor(st.session_state.historico, use_container_width=True)
+            st.session_state.df_leitura = pd.DataFrame(dados_consolidados)
+
+if not st.session_state.df_leitura.empty:
+    st.subheader("📋 Conferência de Extração Hierárquica")
+    st.session_state.df_leitura = st.data_editor(st.session_state.df_leitura, use_container_width=True)
     
-    csv = st.session_state.historico.to_csv(index=False, sep=";", encoding="utf-8-sig")
-    st.download_button("📥 Baixar Planilha Corrigida", csv, "producao.csv", "text/csv")
+    csv = st.session_state.df_leitura.to_csv(index=False, sep=";", encoding="utf-8-sig")
+    st.download_button("📥 Baixar Planilha", csv, "conferencia_industrial.csv", "text/csv")
