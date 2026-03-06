@@ -6,115 +6,96 @@ from PIL import Image
 from thefuzz import process, fuzz
 import re
 
-# 1. Configuração de Página
-st.set_page_config(page_title="Leitor Industrial por Etiquetas", layout="wide")
+# Configuração da página
+st.set_page_config(page_title="Extrator Industrial de Precisão", layout="wide")
 
 @st.cache_resource
 def carregar_leitor():
+    # Carrega o motor de leitura para Português e Inglês
     return easyocr.Reader(['pt', 'en'], gpu=False)
 
 reader = carregar_leitor()
 
 @st.cache_data
-def carregar_lista():
-    for enc in ['utf-8', 'latin-1', 'cp1252']:
-        try:
-            df = pd.read_csv("lista_produtos.csv", sep=";", encoding=enc)
-            return df.iloc[:, 0].dropna().astype(str).str.upper().tolist()
-        except:
-            continue
-    return []
+def carregar_lista_produtos():
+    try:
+        df = pd.read_csv("lista_produtos.csv", sep=";", encoding="latin-1")
+        return df.iloc[:, 0].dropna().astype(str).str.upper().tolist()
+    except:
+        return []
 
-lista_oficial = carregar_lista()
+lista_oficial = carregar_lista_produtos()
 
-if "df_final" not in st.session_state:
-    st.session_state.df_final = pd.DataFrame(columns=[
-        "Produto Lido", "Produto Oficial", "Confiança %", "Lote", "Pigmentação", "Análise FQ", "pH", "Dens", "Visc"
-    ])
+if "historico" not in st.session_state:
+    st.session_state.historico = pd.DataFrame()
 
-st.title("🏭 Leitor de Etiquetas Individuais (Local)")
-st.caption("Separação espacial de blocos para evitar mistura de dados entre produtos.")
+st.title("🏭 Leitor de Diário de Produção")
 
-uploaded_file = st.file_uploader("Suba a foto com várias etiquetas/linhas", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("Suba a foto do diário", type=["jpg", "jpeg", "png"])
 
 if uploaded_file:
     image = Image.open(uploaded_file).convert('RGB')
-    st.image(image, width=500)
+    st.image(image, width=600, caption="Imagem carregada")
     
-    if st.button("🔍 Processar Etiquetas Separadamente", type="primary"):
-        with st.spinner("Analisando blocos de texto..."):
+    if st.button("🔍 Extrair Todos os Lotes", type="primary"):
+        with st.spinner("Agrupando etiquetas e manuscritos..."):
             img_np = np.array(image)
-            # detail=1 retorna as coordenadas [x, y] de cada palavra
+            # Lê o texto com coordenadas detalhadas
             resultados = reader.readtext(img_np, detail=1)
             
-            # --- LÓGICA DE AGRUPAMENTO POR LINHA (Y-COORD) ---
-            # Agrupamos palavras que estão em alturas próximas na foto
-            linhas_detectadas = {}
-            tolerancia_y = 40 # Ajuste este valor se as etiquetas forem muito grandes/pequenas
+            # Agrupar palavras que estão na mesma altura (Eixo Y)
+            blocos_por_linha = {}
+            tolerancia_altura = 50 # Define o que é considerado "mesma linha"
             
             for (bbox, texto, prob) in resultados:
-                y_topo = bbox[0][1]
-                encontrou_linha = False
-                for y_ref in linhas_detectadas.keys():
-                    if abs(y_topo - y_ref) < tolerancia_y:
-                        linhas_detectadas[y_ref].append(texto.upper())
-                        encontrou_linha = True
+                centro_y = (bbox[0][1] + bbox[2][1]) / 2
+                encontrou = False
+                for y_ref in blocos_por_linha.keys():
+                    if abs(centro_y - y_ref) < tolerancia_altura:
+                        blocos_por_linha[y_ref].append(texto.upper())
+                        encontrou = True
                         break
-                if not encontrou_linha:
-                    linhas_detectadas[y_topo] = [texto.upper()]
+                if not encontrou:
+                    blocos_por_linha[centro_y] = [texto.upper()]
 
-            novos_registros = []
+            registros_da_foto = []
             
-            # Processar cada "linha" ou "bloco" como uma etiqueta única
-            for y in sorted(linhas_detectadas.keys()):
-                texto_bloco = " ".join(linhas_detectadas[y])
+            # Processa cada linha horizontal como um Lote único
+            for y in sorted(blocos_por_linha.keys()):
+                texto_linha = " ".join(blocos_por_linha[y])
                 
-                # 1. Extração de Horários (Ordem Cronológica)
-                horas = re.findall(r'\b(?:[01]\d|2[0-3])[:\-\s][0-5]\d\b', texto_bloco)
-                pig = horas[0] if len(horas) > 0 else "---"
-                fq = horas[1] if len(horas) > 1 else "---"
+                # Regex para pegar Horários (ex: 18:10 ou 18.10)
+                horas = re.findall(r'\b(?:[012]?\d)[:\.\-][0-5]\d\b', texto_linha)
+                # Regex para pegar pH/Densidade (números com vírgula ou ponto)
+                decimais = re.findall(r'\d+[,\.]\d+', texto_linha)
                 
-                # 2. Extração de Valores Químicos (pH, Dens, Visc)
-                decimais = re.findall(r'\d+[,\.]\d+', texto_bloco)
-                inteiros = re.findall(r'\b\d{2,3}\b', texto_bloco) # Viscosidade geralmente 2 ou 3 dígitos
-                
-                val_ph = decimais[0] if len(decimais) > 0 else "---"
-                val_dens = decimais[1] if len(decimais) > 1 else "---"
-                val_visc = inteiros[0] if len(inteiros) > 0 else "---"
-                
-                # 3. Extração de Lote
-                lote_match = re.search(r'LOTE[:\s]*([A-Z0-9]+)', texto_bloco)
-                lote = lote_match.group(1) if lote_match else "---"
-
-                # 4. VALIDAÇÃO 90% CONTRA LISTA CSV
-                prod_oficial = "❌ PRODUTO NÃO ENCONTRADO"
-                score_val = 0
+                # Validação Rígida 90% contra seu CSV
+                produto_validado = "❌ NÃO ENCONTRADO"
+                score = 0
                 if lista_oficial:
-                    # Comparamos o bloco todo contra a lista para achar o nome do produto
-                    match, score = process.extractOne(texto_bloco, lista_oficial, scorer=fuzz.token_set_ratio)
-                    if score >= 90:
-                        prod_oficial = match
-                        score_val = score
-                    else:
-                        score_val = score
+                    match, score_match = process.extractOne(texto_linha, lista_oficial, scorer=fuzz.token_set_ratio)
+                    if score_match >= 90:
+                        produto_validado = match
+                        score = score_match
+                
+                # Organiza os dados extraídos
+                registros_da_foto.append({
+                    "Produto Lido": texto_linha[:40],
+                    "Produto Oficial": produto_validado,
+                    "Confiança": f"{score}%",
+                    "Horário 1": horas[0] if len(horas) > 0 else "-",
+                    "Horário 2": horas[1] if len(horas) > 1 else "-",
+                    "Analise 1": decimais[0] if len(decimais) > 0 else "-",
+                    "Analise 2": decimais[1] if len(decimais) > 1 else "-",
+                })
 
-                novos_registros.append([
-                    texto_bloco[:40], prod_oficial, score_val, lote, pig, fq, val_ph, val_dens, val_visc
-                ])
+            df_novo = pd.DataFrame(registros_da_foto)
+            st.session_state.historico = pd.concat([st.session_state.historico, df_novo], ignore_index=True)
 
-            if novos_registros:
-                df_temp = pd.DataFrame(novos_registros, columns=st.session_state.df_final.columns)
-                st.session_state.df_final = pd.concat([st.session_state.df_final, df_temp], ignore_index=True)
-
-# --- REVISÃO ---
-if not st.session_state.df_final.empty:
-    st.divider()
-    st.subheader("📋 Revisão de Lotes Detectados")
-    st.session_state.df_final = st.data_editor(st.session_state.df_final, use_container_width=True)
+# Exibição e Edição
+if not st.session_state.historico.empty:
+    st.subheader("📋 Tabela de Conferência")
+    st.session_state.historico = st.data_editor(st.session_state.historico, use_container_width=True)
     
-    csv = st.session_state.df_final.to_csv(index=False, sep=";", encoding="utf-8-sig")
-    st.download_button("📥 Baixar Planilha", csv, "producao.csv", "text/csv")
-    
-    if st.button("🗑️ Limpar Tudo"):
-        st.session_state.df_final = pd.DataFrame(columns=st.session_state.df_final.columns)
-        st.rerun()
+    csv = st.session_state.historico.to_csv(index=False, sep=";", encoding="utf-8-sig")
+    st.download_button("📥 Baixar Planilha Corrigida", csv, "producao.csv", "text/csv")
