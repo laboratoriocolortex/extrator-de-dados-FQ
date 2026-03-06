@@ -1,27 +1,26 @@
 import streamlit as st
 import pandas as pd
-import google.generativeai as genai
+import numpy as np
+import easyocr
 from PIL import Image
 from thefuzz import process, fuzz
+import re
 import io
 
 # 1. Configuração da Página
-st.set_page_config(page_title="Extrator Industrial 3.1 Pro - Validação Rígida", layout="wide")
+st.set_page_config(page_title="Extrator Industrial Local", layout="wide")
 
-# 2. Configuração do Motor Pro
-try:
-    genai.configure(api_key=st.secrets["GEMINI_CHAVE"])
-    model = genai.GenerativeModel(
-        model_name="gemini-3.1-pro-preview",
-        generation_config={"temperature": 0} 
-    )
-except Exception:
-    st.error("Erro na API Key. Verifique os Secrets.")
-    st.stop()
+# 2. Motor OCR Local (Carrega uma vez e guarda na memória)
+@st.cache_resource
+def carregar_leitor():
+    # 'pt' para Português, 'en' para números e siglas
+    return easyocr.Reader(['pt', 'en'], gpu=False)
 
-# 3. Carregamento da Lista Oficial (792 Produtos)
+reader = carregar_leitor()
+
+# 3. Lista de Produtos (Validação 90%)
 @st.cache_data
-def carregar_lista_produtos():
+def carregar_lista():
     for enc in ['utf-8', 'latin-1', 'cp1252']:
         try:
             df = pd.read_csv("lista_produtos.csv", sep=";", encoding=enc)
@@ -30,96 +29,95 @@ def carregar_lista_produtos():
             continue
     return []
 
-lista_oficial = carregar_lista_produtos()
+lista_oficial = carregar_lista()
 
-# 4. Estado da Sessão
-if "df_validacao" not in st.session_state:
-    st.session_state.df_validacao = pd.DataFrame(columns=[
-        "Produto Lido (IA)", "Produto Oficial (Lista)", "Confiança %", "Lote", "IniPig", "FimPig", "Visc", "pH", "Dens", "Status"
+if "df_producao" not in st.session_state:
+    st.session_state.df_producao = pd.DataFrame(columns=[
+        "Produto Lido", "Produto Oficial", "Confiança %", "Lote", "Horários", "pH", "Dens", "Status"
     ])
 
 # --- INTERFACE ---
-st.title("🚀 Extrator Industrial - Validação Rígida (90%)")
-st.markdown("---")
+st.title("🏭 Extrator de Produção Local (EasyOCR)")
+st.caption("Processamento interno: sem erros de cota (429) e sem limite de uso.")
 
-uploaded_file = st.file_uploader("Suba a imagem do diário ou etiquetas", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("Suba a foto do diário/etiqueta", type=["jpg", "jpeg", "png"])
 
 if uploaded_file:
-    image = Image.open(uploaded_file)
-    st.image(image, width=450, caption="Documento Detectado")
+    image = Image.open(uploaded_file).convert('RGB')
+    st.image(image, width=450, caption="Imagem para Processamento")
     
-    if st.button("🔍 Processar e Validar Dados", type="primary"):
-        with st.spinner("Analisando com 90% de critério de similaridade..."):
-            try:
-                # Prompt focado em manter a estrutura da linha
-                prompt = """Extraia todos os dados presentes na imagem.
-                REGRAS:
-                - TUDO EM CAPSLOCK.
-                - Saída em CSV (separador ;).
-                - Identifique Produto;Lote;IniPig;FimPig;Visc;pH;Dens;Status.
-                - Se a etiqueta for DOURADA/BRONZE, adicione 'COR SOB ENCOMENDA' ao produto.
-                """
+    if st.button("🔍 Extrair Dados Localmente", type="primary"):
+        with st.spinner("O motor local está lendo os caracteres..."):
+            # Converte para array que o EasyOCR processa
+            img_np = np.array(image)
+            
+            # Leitura do texto com detalhes de posição
+            resultados = reader.readtext(img_np, detail=1)
+            
+            # Unifica o texto e tenta identificar padrões
+            texto_bruto = " ".join([res[1].upper() for res in resultados])
+            
+            # --- FILTROS INTELIGENTES (REGEX) ---
+            
+            # 1. Busca Horários (Padrões como 08:30, 09-15, 1030)
+            padrao_hora = r'\b([01]?[0-9]|2[0-3])[:\-\s]?([0-5][0-9])\b'
+            horas_encontradas = re.findall(padrao_hora, texto_bruto)
+            horas_formatadas = [f"{h[0]}:{h[1]}" for h in horas_encontradas]
+            horarios_str = " | ".join(horas_formatadas) if horas_formatadas else "---"
+            
+            # 2. Busca pH e Densidade (Números com vírgula ou ponto)
+            numeros_decimais = re.findall(r'\d+[,\.]\d+', texto_bruto)
+            ph = numeros_decimais[0] if len(numeros_decimais) > 0 else "---"
+            dens = numeros_decimais[1] if len(numeros_decimais) > 1 else "---"
+            
+            # 3. Busca Lote (Palavra LOTE seguida de números/letras)
+            lote_match = re.search(r'LOTE[:\s]*([A-Z0-9]+)', texto_bruto)
+            lote = lote_match.group(1) if lote_match else "---"
 
-                response = model.generate_content([image, prompt])
-                linhas = response.text.strip().split('\n')
-                
-                novos_itens = []
-                for linha in linhas:
-                    if ';' in linha and 'Produto;' not in linha:
-                        partes = [p.strip() for p in linha.split(';')]
-                        if len(partes) >= 8:
-                            prod_lido = partes[0].upper()
-                            
-                            # --- LÓGICA DE ASSOCIAÇÃO RÍGIDA (90%) ---
-                            prod_validado = ""
-                            score_final = 0
-                            
-                            if lista_oficial:
-                                # Usamos o scorer token_set_ratio para lidar com inversões de palavras
-                                match, score = process.extractOne(prod_lido, lista_oficial, scorer=fuzz.token_set_ratio)
-                                
-                                if score >= 90:
-                                    prod_validado = match
-                                    score_final = score
-                                else:
-                                    # NOVA INSTRUÇÃO: Identificação clara de não encontrado
-                                    prod_validado = "❌ PRODUTO NÃO ENCONTRADO NA LISTA"
-                                    score_final = score
+            # --- VALIDAÇÃO RÍGIDA (90%) ---
+            prod_oficial = "❌ NÃO ENCONTRADO NA LISTA"
+            score_matching = 0
+            
+            if lista_oficial:
+                # O EasyOCR pode ler o nome espalhado, tentamos o matching no texto todo
+                match, score = process.extractOne(texto_bruto, lista_oficial, scorer=fuzz.token_set_ratio)
+                if score >= 90:
+                    prod_oficial = match
+                    score_matching = score
+                else:
+                    score_matching = score
 
-                            novos_itens.append([
-                                prod_lido, prod_validado, score_final,
-                                partes[1], partes[2], partes[3], partes[4], partes[5], partes[6], partes[7]
-                            ])
+            # --- SALVAR NO HISTÓRICO ---
+            novo_registro = {
+                "Produto Lido": texto_bruto[:50] + "...",
+                "Produto Oficial": prod_oficial,
+                "Confiança %": score_matching,
+                "Lote": lote,
+                "Horários": horarios_str,
+                "pH": ph,
+                "Dens": dens,
+                "Status": "REVISAR"
+            }
+            
+            st.session_state.df_producao = pd.concat([st.session_state.df_producao, pd.DataFrame([novo_registro])], ignore_index=True)
 
-                if novos_itens:
-                    df_temp = pd.DataFrame(novos_itens, columns=st.session_state.df_validacao.columns)
-                    st.session_state.df_validacao = pd.concat([st.session_state.df_validacao, df_temp], ignore_index=True)
-                    st.success("Processamento concluído.")
-            except Exception as e:
-                st.error(f"Erro no processamento: {e}")
-
-# --- REVISÃO E EDIÇÃO ---
-if not st.session_state.df_validacao.empty:
+# --- REVISÃO TÉCNICA ---
+if not st.session_state.df_producao.empty:
     st.divider()
-    st.subheader("📋 Revisão Técnica dos Dados")
-    st.warning("⚠️ Atenção: Itens marcados com '❌' não atingiram 90% de similaridade e devem ser corrigidos manualmente.")
+    st.subheader("📝 Tabela de Conferência")
+    st.info("Como este processo é local, use a tabela abaixo para ajustar qualquer caractere que o OCR leu errado.")
     
-    # Editor de dados dinâmico
-    st.session_state.df_validacao = st.data_editor(
-        st.session_state.df_validacao,
-        num_rows="dynamic",
+    # Editor para correções manuais (Essencial no OCR local)
+    st.session_state.df_producao = st.data_editor(
+        st.session_state.df_producao,
         use_container_width=True,
-        key="editor_90_confianca"
+        num_rows="dynamic"
     )
 
     col1, col2 = st.columns(2)
+    csv = st.session_state.df_producao.to_csv(index=False, sep=";", encoding="utf-8-sig")
+    col1.download_button("📥 Exportar Planilha Excel", csv, "producao_local.csv", "text/csv")
     
-    # Exportação
-    csv = st.session_state.df_validacao.to_csv(index=False, sep=";", encoding="utf-8-sig")
-    col1.download_button("📥 Baixar Planilha Validada", csv, "producao_90_precisao.csv", "text/csv")
-    
-    if col2.button("🗑️ Limpar Histórico"):
-        st.session_state.df_validacao = pd.DataFrame(columns=st.session_state.df_validacao.columns)
+    if col2.button("🗑️ Limpar Sessão"):
+        st.session_state.df_producao = pd.DataFrame(columns=st.session_state.df_producao.columns)
         st.rerun()
-
-
