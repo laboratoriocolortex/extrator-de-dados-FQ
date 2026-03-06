@@ -12,7 +12,7 @@ st.set_page_config(page_title="Extrator Industrial 3.1 Pro - Validação Rígida
 try:
     genai.configure(api_key=st.secrets["GEMINI_CHAVE"])
     model = genai.GenerativeModel(
-        model_name="gemini-1.5-pro",
+        model_name="gemini-3-pro-preview",
         generation_config={"temperature": 0} 
     )
 except Exception:
@@ -121,3 +121,4 @@ if not st.session_state.df_validacao.empty:
     if col2.button("🗑️ Limpar Histórico"):
         st.session_state.df_validacao = pd.DataFrame(columns=st.session_state.df_validacao.columns)
         st.rerun()
+
