@@ -1,5 +1,8 @@
 streamlit
 pandas
+Pillow
 thefuzz
-google-generativeai
-pillow
+python-Levenshtein
+easyocr
+opencv-python-headless
+numpy
