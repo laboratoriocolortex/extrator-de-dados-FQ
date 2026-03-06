@@ -5,20 +5,16 @@ import easyocr
 from PIL import Image
 from thefuzz import process, fuzz
 import re
-import io
 
-# 1. Configuração da Página
-st.set_page_config(page_title="Extrator Industrial Local", layout="wide")
+# 1. Configuração de Página
+st.set_page_config(page_title="Leitor Industrial por Etiquetas", layout="wide")
 
-# 2. Motor OCR Local (Carrega uma vez e guarda na memória)
 @st.cache_resource
 def carregar_leitor():
-    # 'pt' para Português, 'en' para números e siglas
     return easyocr.Reader(['pt', 'en'], gpu=False)
 
 reader = carregar_leitor()
 
-# 3. Lista de Produtos (Validação 90%)
 @st.cache_data
 def carregar_lista():
     for enc in ['utf-8', 'latin-1', 'cp1252']:
@@ -31,93 +27,94 @@ def carregar_lista():
 
 lista_oficial = carregar_lista()
 
-if "df_producao" not in st.session_state:
-    st.session_state.df_producao = pd.DataFrame(columns=[
-        "Produto Lido", "Produto Oficial", "Confiança %", "Lote", "Horários", "pH", "Dens", "Status"
+if "df_final" not in st.session_state:
+    st.session_state.df_final = pd.DataFrame(columns=[
+        "Produto Lido", "Produto Oficial", "Confiança %", "Lote", "Pigmentação", "Análise FQ", "pH", "Dens", "Visc"
     ])
 
-# --- INTERFACE ---
-st.title("🏭 Extrator de Produção Local (EasyOCR)")
-st.caption("Processamento interno: sem erros de cota (429) e sem limite de uso.")
+st.title("🏭 Leitor de Etiquetas Individuais (Local)")
+st.caption("Separação espacial de blocos para evitar mistura de dados entre produtos.")
 
-uploaded_file = st.file_uploader("Suba a foto do diário/etiqueta", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("Suba a foto com várias etiquetas/linhas", type=["jpg", "jpeg", "png"])
 
 if uploaded_file:
     image = Image.open(uploaded_file).convert('RGB')
-    st.image(image, width=450, caption="Imagem para Processamento")
+    st.image(image, width=500)
     
-    if st.button("🔍 Extrair Dados Localmente", type="primary"):
-        with st.spinner("O motor local está lendo os caracteres..."):
-            # Converte para array que o EasyOCR processa
+    if st.button("🔍 Processar Etiquetas Separadamente", type="primary"):
+        with st.spinner("Analisando blocos de texto..."):
             img_np = np.array(image)
-            
-            # Leitura do texto com detalhes de posição
+            # detail=1 retorna as coordenadas [x, y] de cada palavra
             resultados = reader.readtext(img_np, detail=1)
             
-            # Unifica o texto e tenta identificar padrões
-            texto_bruto = " ".join([res[1].upper() for res in resultados])
+            # --- LÓGICA DE AGRUPAMENTO POR LINHA (Y-COORD) ---
+            # Agrupamos palavras que estão em alturas próximas na foto
+            linhas_detectadas = {}
+            tolerancia_y = 40 # Ajuste este valor se as etiquetas forem muito grandes/pequenas
             
-            # --- FILTROS INTELIGENTES (REGEX) ---
-            
-            # 1. Busca Horários (Padrões como 08:30, 09-15, 1030)
-            padrao_hora = r'\b([01]?[0-9]|2[0-3])[:\-\s]?([0-5][0-9])\b'
-            horas_encontradas = re.findall(padrao_hora, texto_bruto)
-            horas_formatadas = [f"{h[0]}:{h[1]}" for h in horas_encontradas]
-            horarios_str = " | ".join(horas_formatadas) if horas_formatadas else "---"
-            
-            # 2. Busca pH e Densidade (Números com vírgula ou ponto)
-            numeros_decimais = re.findall(r'\d+[,\.]\d+', texto_bruto)
-            ph = numeros_decimais[0] if len(numeros_decimais) > 0 else "---"
-            dens = numeros_decimais[1] if len(numeros_decimais) > 1 else "---"
-            
-            # 3. Busca Lote (Palavra LOTE seguida de números/letras)
-            lote_match = re.search(r'LOTE[:\s]*([A-Z0-9]+)', texto_bruto)
-            lote = lote_match.group(1) if lote_match else "---"
+            for (bbox, texto, prob) in resultados:
+                y_topo = bbox[0][1]
+                encontrou_linha = False
+                for y_ref in linhas_detectadas.keys():
+                    if abs(y_topo - y_ref) < tolerancia_y:
+                        linhas_detectadas[y_ref].append(texto.upper())
+                        encontrou_linha = True
+                        break
+                if not encontrou_linha:
+                    linhas_detectadas[y_topo] = [texto.upper()]
 
-            # --- VALIDAÇÃO RÍGIDA (90%) ---
-            prod_oficial = "❌ NÃO ENCONTRADO NA LISTA"
-            score_matching = 0
+            novos_registros = []
             
-            if lista_oficial:
-                # O EasyOCR pode ler o nome espalhado, tentamos o matching no texto todo
-                match, score = process.extractOne(texto_bruto, lista_oficial, scorer=fuzz.token_set_ratio)
-                if score >= 90:
-                    prod_oficial = match
-                    score_matching = score
-                else:
-                    score_matching = score
+            # Processar cada "linha" ou "bloco" como uma etiqueta única
+            for y in sorted(linhas_detectadas.keys()):
+                texto_bloco = " ".join(linhas_detectadas[y])
+                
+                # 1. Extração de Horários (Ordem Cronológica)
+                horas = re.findall(r'\b(?:[01]\d|2[0-3])[:\-\s][0-5]\d\b', texto_bloco)
+                pig = horas[0] if len(horas) > 0 else "---"
+                fq = horas[1] if len(horas) > 1 else "---"
+                
+                # 2. Extração de Valores Químicos (pH, Dens, Visc)
+                decimais = re.findall(r'\d+[,\.]\d+', texto_bloco)
+                inteiros = re.findall(r'\b\d{2,3}\b', texto_bloco) # Viscosidade geralmente 2 ou 3 dígitos
+                
+                val_ph = decimais[0] if len(decimais) > 0 else "---"
+                val_dens = decimais[1] if len(decimais) > 1 else "---"
+                val_visc = inteiros[0] if len(inteiros) > 0 else "---"
+                
+                # 3. Extração de Lote
+                lote_match = re.search(r'LOTE[:\s]*([A-Z0-9]+)', texto_bloco)
+                lote = lote_match.group(1) if lote_match else "---"
 
-            # --- SALVAR NO HISTÓRICO ---
-            novo_registro = {
-                "Produto Lido": texto_bruto[:50] + "...",
-                "Produto Oficial": prod_oficial,
-                "Confiança %": score_matching,
-                "Lote": lote,
-                "Horários": horarios_str,
-                "pH": ph,
-                "Dens": dens,
-                "Status": "REVISAR"
-            }
-            
-            st.session_state.df_producao = pd.concat([st.session_state.df_producao, pd.DataFrame([novo_registro])], ignore_index=True)
+                # 4. VALIDAÇÃO 90% CONTRA LISTA CSV
+                prod_oficial = "❌ PRODUTO NÃO ENCONTRADO"
+                score_val = 0
+                if lista_oficial:
+                    # Comparamos o bloco todo contra a lista para achar o nome do produto
+                    match, score = process.extractOne(texto_bloco, lista_oficial, scorer=fuzz.token_set_ratio)
+                    if score >= 90:
+                        prod_oficial = match
+                        score_val = score
+                    else:
+                        score_val = score
 
-# --- REVISÃO TÉCNICA ---
-if not st.session_state.df_producao.empty:
+                novos_registros.append([
+                    texto_bloco[:40], prod_oficial, score_val, lote, pig, fq, val_ph, val_dens, val_visc
+                ])
+
+            if novos_registros:
+                df_temp = pd.DataFrame(novos_registros, columns=st.session_state.df_final.columns)
+                st.session_state.df_final = pd.concat([st.session_state.df_final, df_temp], ignore_index=True)
+
+# --- REVISÃO ---
+if not st.session_state.df_final.empty:
     st.divider()
-    st.subheader("📝 Tabela de Conferência")
-    st.info("Como este processo é local, use a tabela abaixo para ajustar qualquer caractere que o OCR leu errado.")
+    st.subheader("📋 Revisão de Lotes Detectados")
+    st.session_state.df_final = st.data_editor(st.session_state.df_final, use_container_width=True)
     
-    # Editor para correções manuais (Essencial no OCR local)
-    st.session_state.df_producao = st.data_editor(
-        st.session_state.df_producao,
-        use_container_width=True,
-        num_rows="dynamic"
-    )
-
-    col1, col2 = st.columns(2)
-    csv = st.session_state.df_producao.to_csv(index=False, sep=";", encoding="utf-8-sig")
-    col1.download_button("📥 Exportar Planilha Excel", csv, "producao_local.csv", "text/csv")
+    csv = st.session_state.df_final.to_csv(index=False, sep=";", encoding="utf-8-sig")
+    st.download_button("📥 Baixar Planilha", csv, "producao.csv", "text/csv")
     
-    if col2.button("🗑️ Limpar Sessão"):
-        st.session_state.df_producao = pd.DataFrame(columns=st.session_state.df_producao.columns)
+    if st.button("🗑️ Limpar Tudo"):
+        st.session_state.df_final = pd.DataFrame(columns=st.session_state.df_final.columns)
         st.rerun()
